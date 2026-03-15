@@ -1,0 +1,307 @@
+{{ define "main" }}
+<div class="app">
+
+  <header class="site-header">
+    <h1>Doomsday Hedging Calculator</h1>
+    <p class="subtitle">Polymarket long/short position hedge analyzer</p>
+  </header>
+
+  <!-- Mode toggle -->
+  <div class="mode-toggle">
+    <button class="mode-btn active" id="btnModeCalc"  onclick="switchMode('calc')">Calculator</button>
+    <button class="mode-btn"        id="btnModeComp"  onclick="switchMode('compare')">Compare Markets</button>
+  </div>
+
+  <main>
+
+  <!-- ══════════════════ CALCULATOR MODE ══════════════════ -->
+  <div id="modeCalc">
+
+    <!-- Capital input -->
+    <section class="capital-section">
+      <label for="capital" class="capital-label">
+        Available Capital
+        <span class="hint">Total USDC you have to work with</span>
+      </label>
+      <div class="capital-input-wrap">
+        <span class="prefix">$</span>
+        <input
+          type="number"
+          id="capital"
+          placeholder="0.00"
+          min="0"
+          step="0.01"
+        />
+      </div>
+    </section>
+
+    <!-- Side-by-side position inputs -->
+    <section class="positions-grid">
+
+      <!-- LONG (YES) -->
+      <div class="position-card long">
+        <div class="card-header">
+          <span class="badge badge-long">LONG</span>
+          <span class="card-label">YES Shares</span>
+        </div>
+        <div class="fields">
+          <div class="field">
+            <label for="longPrice">Share Price</label>
+            <div class="input-wrap">
+              <span class="prefix">$</span>
+              <input
+                type="number"
+                id="longPrice"
+                placeholder="0.00"
+                min="0"
+                max="1"
+                step="0.001"
+              />
+            </div>
+            <span class="field-hint">Price per YES share (0 – 1)</span>
+          </div>
+          <div class="field">
+            <label for="longShares">Shares Owned</label>
+            <div class="input-wrap">
+              <input
+                type="number"
+                id="longShares"
+                placeholder="0"
+                min="0"
+                step="1"
+              />
+            </div>
+            <span class="field-hint">Number of YES shares you hold</span>
+          </div>
+          <div class="field">
+            <label>Long Side Theta</label>
+            <div class="theta-row">
+              <div class="input-wrap">
+                <span class="prefix">$</span>
+                <input
+                  type="number"
+                  id="longThetaDrop"
+                  placeholder="0.09"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value="0.09"
+                />
+              </div>
+              <span class="theta-over">over</span>
+              <div class="input-wrap">
+                <input
+                  type="number"
+                  id="longThetaDays"
+                  placeholder="180"
+                  min="1"
+                  step="1"
+                  value="180"
+                />
+              </div>
+              <span class="theta-over">days</span>
+            </div>
+            <span class="field-hint" id="longThetaHint">Daily theta: $0.0005/day</span>
+          </div>
+          <div class="field">
+            <label for="longExpDate">YES Expiration</label>
+            <div class="input-wrap">
+              <input type="date" id="longExpDate" />
+            </div>
+            <span class="field-hint" id="longDteHint">—</span>
+          </div>
+          <div class="field-derived" id="longCost">
+            <span class="derived-label">Position Cost</span>
+            <span class="derived-value">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- divider -->
+      <div class="vs-divider">
+        <span>VS</span>
+      </div>
+
+      <!-- SHORT (NO) -->
+      <div class="position-card short">
+        <div class="card-header">
+          <span class="badge badge-short">SHORT</span>
+          <span class="card-label">NO Shares</span>
+        </div>
+        <div class="fields">
+          <div class="field">
+            <label for="shortPrice">Share Price</label>
+            <div class="input-wrap">
+              <span class="prefix">$</span>
+              <input
+                type="number"
+                id="shortPrice"
+                placeholder="0.00"
+                min="0"
+                max="1"
+                step="0.001"
+              />
+            </div>
+            <span class="field-hint">Price per NO share (0 – 1)</span>
+          </div>
+          <div class="field">
+            <label for="shortShares">Shares Owned</label>
+            <div class="input-wrap">
+              <input
+                type="number"
+                id="shortShares"
+                placeholder="0"
+                min="0"
+                step="1"
+              />
+            </div>
+            <span class="field-hint">Number of NO shares you hold</span>
+          </div>
+          <div class="field">
+            <label for="shortExpDate">NO Expiration</label>
+            <div class="input-wrap">
+              <input type="date" id="shortExpDate" />
+            </div>
+            <span class="field-hint" id="shortDteHint">—</span>
+          </div>
+          <div class="field-derived" id="shortCost">
+            <span class="derived-label">Position Cost</span>
+            <span class="derived-value">—</span>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Results -->
+    <section class="results-section" id="results" aria-live="polite">
+      <div class="results-placeholder" id="resultsPlaceholder">
+        <span>Enter prices and share counts above to see your hedge analysis.</span>
+      </div>
+
+      <div class="results-content hidden" id="resultsContent">
+
+        <!-- Current P&L scenarios -->
+        <div class="pnl-grid">
+          <div class="pnl-card" id="pnlYes">
+            <div class="pnl-scenario">
+              Path 1 — YES wins
+              <span class="tooltip-anchor" data-tooltip="The doomsday scenario happens. All YES shares pay out $1 each. All NO shares expire worthless at $0.">?</span>
+            </div>
+            <div class="pnl-amount">—</div>
+          </div>
+          <div class="pnl-card" id="pnlNo">
+            <div class="pnl-scenario">
+              Path 2 — NO wins
+              <span class="tooltip-anchor" id="pnlNoTooltip" data-tooltip="Time passes and the doomsday event doesn't happen. NO shares pay out $1 each. YES shares hold their current market price — no gain or loss on that leg.">?</span>
+            </div>
+            <div class="pnl-amount">—</div>
+          </div>
+        </div>
+
+        <!-- Hedge recommendation -->
+        <div class="recommendation" id="recommendation">
+          <h2>Hedge Recommendation</h2>
+          <div class="rec-body" id="recBody"></div>
+        </div>
+
+        <!-- After-hedge P&L -->
+        <div class="post-hedge" id="postHedge">
+          <h2>After Hedging</h2>
+          <div class="post-hedge-grid" id="postHedgeGrid"></div>
+        </div>
+
+        <!-- Path 1 Breakeven Hedge -->
+        <div class="p1hedge-section" id="p1hedgeSection">
+          <div class="p1hedge-header">
+            <div class="p1hedge-title">
+              <span class="badge badge-long">PATH 1</span>
+              <span>Breakeven Hedge</span>
+              <span class="p1hedge-subtitle">Calculate shares needed so doomsday (YES wins) nets $0</span>
+            </div>
+            <button class="btn-p1hedge" id="btnP1Hedge" onclick="toggleP1Hedge()">Show</button>
+          </div>
+          <div class="p1hedge-body hidden" id="p1hedgeBody">
+            <div id="p1hedgeResult"></div>
+          </div>
+        </div>
+
+        <!-- Sentiment Change Breakeven -->
+        <div class="sentiment-section" id="sentimentSection">
+          <div class="sentiment-header">
+            <span class="badge badge-short">RISK</span>
+            <span class="sentiment-title">Sentiment Change Breakeven</span>
+            <span class="tooltip-anchor" data-tooltip="How much the YES price can drop (without the event resolving) before your NO-side gains no longer cover your YES-side losses. Based on: breakeven drop = (NO shares × (1 − YES price)) ÷ YES shares.">?</span>
+            <span class="sentiment-subtitle">Max YES drop before position loses money (no resolution)</span>
+          </div>
+          <div class="sentiment-body" id="sentimentBody"></div>
+        </div>
+
+        <!-- Math breakdown -->
+        <details class="math-breakdown" id="mathBreakdown">
+          <summary>Show the math</summary>
+          <div class="math-body" id="mathBody"></div>
+        </details>
+
+      </div>
+    </section>
+
+  </div><!-- /modeCalc -->
+
+  <!-- ══════════════════ COMPARE MODE ══════════════════ -->
+  <div id="modeCompare" class="hidden">
+
+    <!-- Tracked markets panel -->
+    <div class="tracked-panel">
+      <div class="tracked-panel-header" onclick="toggleTrackedPanel()" style="cursor:pointer">
+        <span class="tracked-panel-title">Tracked Markets</span>
+        <span class="tracked-panel-hint">Click a market to add it to the comparison</span>
+        <button class="btn-tracked-toggle" id="btnTrackedToggle" onclick="event.stopPropagation();toggleTrackedPanel()">▾</button>
+      </div>
+      <div class="tracked-list" id="trackedList">
+        <!-- rendered by JS from PRESET_MARKETS -->
+      </div>
+    </div>
+
+    <!-- Custom market toolbar -->
+    <div class="comp-toolbar">
+      <button class="btn-add-market" onclick="addMarketEntry()">+ Add Custom Market</button>
+    </div>
+
+    <!-- Dynamic entry cards -->
+    <div id="compEntries"></div>
+
+    <!-- Results table -->
+    <div class="comp-results-wrap hidden" id="compResultsWrap">
+      <h2 class="comp-results-title">Comparison — sorted by Annualized ROI</h2>
+      <div class="comp-table-scroll">
+        <table class="comp-table" id="compTable">
+          <thead>
+            <tr>
+              <th>Market</th>
+              <th>Volume</th>
+              <th>YES Shares</th>
+              <th>NO Shares</th>
+              <th>Total Cost</th>
+              <th>Path 2 P&L</th>
+              <th>Path 2 ROI</th>
+              <th>DTE</th>
+              <th>Annualized ROI</th>
+              <th>Sentiment Breakeven Drop</th>
+            </tr>
+          </thead>
+          <tbody id="compTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /modeCompare -->
+
+  </main>
+
+  <footer class="site-footer">
+    <p>Prices are probabilities (0–1). A share pays $1 if the outcome resolves in its favour, $0 otherwise.</p>
+  </footer>
+
+</div>
+{{ end }}

@@ -1,0 +1,4 @@
+baseURL = '/'
+languageCode = 'en-us'
+title = 'Doomsday Hedging Calculator'
+disableKinds = ['taxonomy', 'term', 'RSS', 'sitemap', 'robotsTXT']

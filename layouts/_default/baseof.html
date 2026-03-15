@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ .Title }}</title>
+  <link rel="stylesheet" href="{{ "css/style.css" | relURL }}" />
+</head>
+<body>
+  {{ block "main" . }}{{ end }}
+  {{- $volumes := dict -}}
+  {{- range .Site.Data.markets -}}
+    {{- $slug := .slug -}}
+    {{- $url  := printf "https://gamma-api.polymarket.com/events?slug=%s" $slug -}}
+    {{- with try (resources.GetRemote $url) -}}
+      {{- with .Value -}}
+        {{- $events := . | transform.Unmarshal -}}
+        {{- if and $events (gt (len $events) 0) -}}
+          {{- $e := index $events 0 -}}
+          {{- $vol := 0.0 -}}
+          {{- $liq := 0.0 -}}
+          {{- with $e.volume   -}}{{- $vol = (printf "%v" .) | float -}}{{- end -}}
+          {{- with $e.liquidity -}}{{- $liq = (printf "%v" .) | float -}}{{- end -}}
+          {{- $volumes = merge $volumes (dict $slug (dict "volume" $vol "liquidity" $liq)) -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  <script>
+    window.TRACKED_MARKETS = {{ .Site.Data.markets | jsonify }};
+    window.MARKET_VOLUMES  = {{ $volumes | jsonify }};
+  </script>
+  <script src="{{ "js/calculator.js" | relURL }}"></script>
+</body>
+</html>
