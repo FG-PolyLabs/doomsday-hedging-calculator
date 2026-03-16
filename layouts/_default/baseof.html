@@ -8,27 +8,76 @@
 </head>
 <body>
   {{ block "main" . }}{{ end }}
-  {{- $volumes := dict -}}
+  {{- $volumes   := dict -}}
+  {{- $priceData := dict -}}
   {{- range .Site.Data.markets -}}
     {{- $slug := .slug -}}
+
+    {{- /* ── Primary slug: volume + its markets ── */ -}}
+    {{- $mktList := slice -}}
     {{- $url  := printf "https://gamma-api.polymarket.com/events?slug=%s" $slug -}}
     {{- with try (resources.GetRemote $url) -}}
       {{- with .Value -}}
         {{- $events := . | transform.Unmarshal -}}
         {{- if and $events (gt (len $events) 0) -}}
           {{- $e := index $events 0 -}}
+
+          {{- /* Volume / liquidity */ -}}
           {{- $vol := 0.0 -}}
           {{- $liq := 0.0 -}}
-          {{- with $e.volume   -}}{{- $vol = (printf "%v" .) | float -}}{{- end -}}
+          {{- with $e.volume    -}}{{- $vol = (printf "%v" .) | float -}}{{- end -}}
           {{- with $e.liquidity -}}{{- $liq = (printf "%v" .) | float -}}{{- end -}}
           {{- $volumes = merge $volumes (dict $slug (dict "volume" $vol "liquidity" $liq)) -}}
+
+          {{- /* Markets from primary slug */ -}}
+          {{- range $e.markets -}}
+            {{- $mkt := . -}}
+            {{- with $mkt.outcomePrices -}}
+              {{- $title      := "" -}}
+              {{- $endDateIso := "" -}}
+              {{- with $mkt.groupItemTitle -}}{{- $title = . -}}{{- end -}}
+              {{- with $mkt.endDateIso    -}}{{- $endDateIso = . -}}{{- end -}}
+              {{- $mktList = $mktList | append (dict "title" $title "endDateIso" $endDateIso "outcomePrices" (printf "%v" .)) -}}
+            {{- end -}}
+          {{- end -}}
+
         {{- end -}}
       {{- end -}}
     {{- end -}}
+
+    {{- /* ── Related slugs: fetch and append their markets ── */ -}}
+    {{- range .relatedSlugs -}}
+      {{- $rSlug := . -}}
+      {{- $rUrl  := printf "https://gamma-api.polymarket.com/events?slug=%s" $rSlug -}}
+      {{- with try (resources.GetRemote $rUrl) -}}
+        {{- with .Value -}}
+          {{- $rEvents := . | transform.Unmarshal -}}
+          {{- if and $rEvents (gt (len $rEvents) 0) -}}
+            {{- $re := index $rEvents 0 -}}
+            {{- range $re.markets -}}
+              {{- $mkt := . -}}
+              {{- with $mkt.outcomePrices -}}
+                {{- $title      := "" -}}
+                {{- $endDateIso := "" -}}
+                {{- with $mkt.groupItemTitle -}}{{- $title = . -}}{{- end -}}
+                {{- with $mkt.endDateIso    -}}{{- $endDateIso = . -}}{{- end -}}
+                {{- $mktList = $mktList | append (dict "title" $title "endDateIso" $endDateIso "outcomePrices" (printf "%v" .)) -}}
+              {{- end -}}
+            {{- end -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+
+    {{- if $mktList -}}
+      {{- $priceData = merge $priceData (dict $slug $mktList) -}}
+    {{- end -}}
+
   {{- end -}}
   <script>
     window.TRACKED_MARKETS = {{ .Site.Data.markets | jsonify }};
-    window.MARKET_VOLUMES  = {{ $volumes | jsonify }};
+    window.MARKET_VOLUMES  = {{ $volumes   | jsonify }};
+    window.MARKET_PRICES   = {{ $priceData | jsonify }};
   </script>
   <script src="{{ "js/calculator.js" | relURL }}"></script>
 </body>

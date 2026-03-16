@@ -77,18 +77,18 @@
             <label>Long Side Theta</label>
             <div class="theta-row">
               <div class="input-wrap">
-                <span class="prefix">$</span>
                 <input
                   type="number"
                   id="longThetaDrop"
-                  placeholder="0.09"
+                  placeholder="10"
                   min="0"
-                  max="1"
-                  step="0.01"
-                  value="0.09"
+                  max="100"
+                  step="1"
+                  value="10"
                 />
+                <span class="suffix">%</span>
               </div>
-              <span class="theta-over">over</span>
+              <span class="theta-over">decay over</span>
               <div class="input-wrap">
                 <input
                   type="number"
@@ -101,7 +101,7 @@
               </div>
               <span class="theta-over">days</span>
             </div>
-            <span class="field-hint" id="longThetaHint">Daily theta: $0.0005/day</span>
+            <span class="field-hint" id="longThetaHint">10% of YES price over 180d — e.g. 0.90 → 0.810, 0.10 → 0.090</span>
           </div>
           <div class="field">
             <label for="longExpDate">YES Expiration</label>
@@ -281,7 +281,9 @@
               <th>Market</th>
               <th>Volume</th>
               <th>YES Shares</th>
+              <th>YES Cost</th>
               <th>NO Shares</th>
+              <th>NO Cost</th>
               <th>Total Cost</th>
               <th>Path 2 P&L</th>
               <th>Path 2 ROI</th>

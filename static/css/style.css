@@ -236,6 +236,13 @@ body {
   user-select: none;
 }
 
+.suffix {
+  padding: 0 0.75rem 0 0.25rem;
+  color: var(--text-subtle);
+  font-size: 0.85rem;
+  user-select: none;
+}
+
 /* ─── Derived field (position cost) ───────────────────────────────────────── */
 .field-derived {
   display: flex;
@@ -837,6 +844,22 @@ body {
   flex-direction: column;
 }
 
+.tracked-category-header {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  padding: 0.6rem 1.25rem 0.25rem;
+  margin-top: 0.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.tracked-category-header:first-child {
+  border-top: none;
+  margin-top: 0;
+}
+
 .tracked-row {
   display: flex;
   align-items: center;
@@ -888,6 +911,34 @@ body {
   border-color: var(--border);
   color: var(--text-subtle);
   cursor: default;
+}
+
+/* Fetch prices button */
+.btn-fetch-prices {
+  padding: 0.25rem 0.65rem;
+  background: transparent;
+  border: 1px solid var(--neutral);
+  border-radius: var(--radius);
+  color: var(--neutral);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+
+.btn-fetch-prices:hover:not(:disabled) { background: var(--neutral); color: #000; }
+.btn-fetch-prices:disabled { opacity: 0.5; cursor: default; }
+
+.btn-fetch-prices.spinning { animation: spin 0.8s linear infinite; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.comp-fetch-status {
+  font-size: 0.72rem;
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+  white-space: nowrap;
 }
 
 /* Polymarket link in card header */
@@ -1138,6 +1189,21 @@ body {
 .btn-remove-leg:hover { color: var(--short); background: var(--short-dim); }
 
 /* Results table */
+.app.compare-mode {
+  max-width: 100%;
+  padding-left: 2rem;
+  padding-right: 2rem;
+}
+
+/* Keep tracked panel + entry cards at a readable width, centered */
+.app.compare-mode .tracked-panel,
+.app.compare-mode .comp-toolbar,
+.app.compare-mode #compEntries {
+  max-width: 960px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .comp-results-wrap {
   margin-top: 1.5rem;
   background: var(--surface);

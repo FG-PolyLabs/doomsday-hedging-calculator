@@ -65,9 +65,11 @@ function calculate() {
   const capital       = val('capital')       ?? 0;
   const longPrice     = val('longPrice');
   const longShares    = val('longShares')    ?? 0;
-  const thetaDrop     = val('longThetaDrop') ?? 0.09;
+  const thetaDrop     = val('longThetaDrop') ?? 10;   // % decay
   const thetaDays     = val('longThetaDays') ?? 180;
-  const longTheta     = thetaDays > 0 ? thetaDrop / thetaDays : 0;
+  // Multiplicative decay: yesPrice × (1 - thetaDrop/100)^(dte/thetaDays)
+  // longTheta = per-day decay factor
+  const longTheta     = thetaDays > 0 ? Math.pow(1 - thetaDrop / 100, 1 / thetaDays) : 1;
   const longExpDate   = document.getElementById('longExpDate').value;
   const shortPrice    = val('shortPrice');
   const shortShares   = val('shortShares')   ?? 0;
@@ -76,11 +78,11 @@ function calculate() {
   const longDte  = computeDte(longExpDate);
   const shortDte = computeDte(shortExpDate);
 
-  // Update theta hint
+  // Update theta hint: show daily factor and what e.g. 0.90 YES becomes after thetaDays
   const thetaHint = document.getElementById('longThetaHint');
   if (thetaHint) thetaHint.textContent = thetaDays > 0
-    ? `Daily theta: $${longTheta.toFixed(6).replace(/\.?0+$/, '')}/day`
-    : 'Daily theta: —';
+    ? `${thetaDrop}% of YES price over ${thetaDays}d — e.g. 0.90 → ${(0.9 * Math.pow(1 - thetaDrop/100, 1)).toFixed(3)}, 0.10 → ${(0.1 * Math.pow(1 - thetaDrop/100, 1)).toFixed(3)}`
+    : 'Daily factor: —';
 
   // Update DTE hints
   const longHint  = document.getElementById('longDteHint');
@@ -103,7 +105,14 @@ function calculate() {
     return;
   }
 
-  showResults({ capital, longPrice, longShares, longTheta, longDte, shortPrice, shortShares, shortDte });
+  // Time-value discount on YES payout: when doomsday happens before expiry,
+  // YES shares trade at ~1 − 4%APR×DTE/365 rather than $1.00 immediately.
+  const DOOMSDAY_RATE = 0.04;
+  const effectiveYesValue = longDte && longDte > 0
+    ? 1 - DOOMSDAY_RATE * longDte / 365
+    : 1.0;
+
+  showResults({ capital, longPrice, longShares, longTheta, longDte, effectiveYesValue, shortPrice, shortShares, shortDte });
 }
 
 function updatePositionCost(id, price, shares) {
@@ -127,30 +136,32 @@ function showPlaceholder(msg) {
   document.getElementById('resultsContent').classList.add('hidden');
 }
 
-function showResults({ capital, longPrice, longShares, longTheta, longDte, shortPrice, shortShares, shortDte }) {
+function showResults({ capital, longPrice, longShares, longTheta, longDte, effectiveYesValue, shortPrice, shortShares, shortDte }) {
   document.getElementById('resultsPlaceholder').classList.add('hidden');
   document.getElementById('resultsContent').classList.remove('hidden');
 
   // ── Current P&L ───────────────────────────────────────────────────────────
-  // Path 1 (YES/Doomsday): YES → $1, NO → $0
-  const pnlYes = longShares * (1 - longPrice) - shortShares * shortPrice;
+  // Path 1 (YES/Doomsday): YES → effectiveYesValue (discounted $1), NO → $0
+  const pnlYes = longShares * (effectiveYesValue - longPrice) - shortShares * shortPrice;
 
-  // Path 2 (NO): NO → $1, YES decays by theta × shortDte (default 0 → flat)
-  const thetaDecay     = longTheta > 0 && shortDte ? longTheta * shortDte : 0;
-  const yesPriceAtNoRes = Math.max(0, longPrice - thetaDecay);
+  // Path 2 (NO): NO → $1, YES decays multiplicatively by (longTheta^shortDte)
+  // longTheta is the per-day factor, e.g. 0.9994 for 10%/180d
+  const decayMultiplier  = longTheta < 1 && shortDte ? Math.pow(longTheta, shortDte) : 1;
+  const yesPriceAtNoRes  = longPrice * decayMultiplier;
+  const thetaDecay       = longPrice - yesPriceAtNoRes; // dollar decay for display
   const pnlNo = shortShares * (1 - shortPrice) + longShares * (yesPriceAtNoRes - longPrice);
 
   // Update Path 2 tooltip dynamically
   const pnlNoTooltip = document.getElementById('pnlNoTooltip');
   if (pnlNoTooltip) {
-    pnlNoTooltip.dataset.tooltip = thetaDecay > 0
-      ? `NO shares pay out $1 each. YES price decays by $${thetaDecay.toFixed(4)} total (theta $${longTheta} × ${shortDte} DTE), reducing YES value from $${longPrice.toFixed(4)} to $${yesPriceAtNoRes.toFixed(4)} per share.`
+    pnlNoTooltip.dataset.tooltip = thetaDecay > 0.0001
+      ? `NO shares pay out $1 each. YES price decays multiplicatively by ×${decayMultiplier.toFixed(4)} total over ${shortDte} days, from $${longPrice.toFixed(4)} to $${yesPriceAtNoRes.toFixed(4)} per share.`
       : `Time passes and the doomsday event doesn't happen. NO shares pay out $1 each. YES shares hold their current market price — no gain or loss on that leg.`;
   }
 
   renderPnlCard('pnlYes', 'Path 1 — YES wins (Doomsday)', pnlYes);
-  const path2Label = thetaDecay > 0
-    ? `Path 2 — NO wins (YES decays −${fmt(thetaDecay, 4)}/share)`
+  const path2Label = thetaDecay > 0.0001
+    ? `Path 2 — NO wins (YES ×${decayMultiplier.toFixed(4)} → ${fmt(yesPriceAtNoRes, 4)}/share)`
     : 'Path 2 — NO wins (YES holds flat)';
   renderPnlCard('pnlNo', path2Label, pnlNo);
 
@@ -176,36 +187,37 @@ function showResults({ capital, longPrice, longShares, longTheta, longDte, short
       <span class="rec-detail">Enter your YES and/or NO share counts to get a Path 1 hedge recommendation.</span>
     `;
   } else {
-    const noBreakeven = longShares * (1 - longPrice) / shortPrice;  // total NO at Path 1 = $0
-    const noHeadroom  = noBreakeven - shortShares;                   // additional NO capacity
+    // NO shares floored — can't buy fractional shares
+    const noBreakeven = Math.floor(longShares * (effectiveYesValue - longPrice) / shortPrice);
+    const noHeadroom  = noBreakeven - shortShares;
 
     if (pnlYes > 0.0001) {
       // ── Path 1 is currently positive — show headroom ──────────────────
+      const addlFromCapital = capital > 0 ? Math.floor(capital / shortPrice) : 0;
       const cost = noHeadroom * shortPrice;
       const capitalNote = capital > 0 && cost > capital
-        ? `<div class="capital-warning">⚠ Full headroom cost (${fmt(cost)}) exceeds available capital (${fmt(capital)}). With your capital you can buy ${fmtShares(capital / shortPrice)} NO shares — Path 1 would then be ${fmt(longShares * (1 - longPrice) - (shortShares + capital / shortPrice) * shortPrice)}.</div>`
+        ? `<div class="capital-warning">⚠ Full headroom cost (${fmt(cost)}) exceeds available capital (${fmt(capital)}). With your capital you can buy ${addlFromCapital} NO shares — Path 1 would then be ${fmt(longShares * (effectiveYesValue - longPrice) - (shortShares + addlFromCapital) * shortPrice)}.</div>`
         : '';
 
       recBody.innerHTML = `
-        <span class="rec-action buy-short">Buy up to <strong>${fmtShares(noHeadroom)}</strong> more NO shares</span>
+        <span class="rec-action buy-short">Buy up to <strong>${noBreakeven - Math.ceil(shortShares)}</strong> more NO shares</span>
         <span class="rec-detail">
           Path 1 is currently <strong class="positive">${fmt(pnlYes)}</strong> positive.
-          You can add up to <strong>${fmtShares(noHeadroom)}</strong> NO shares @ ${fmt(shortPrice, 4)}/share
-          (cost: ${fmt(cost)}) and doomsday still leaves you net positive.
-          At exactly ${fmtShares(noBreakeven)} total NO shares, Path 1 breaks even at $0.
+          You can add up to <strong>${noBreakeven - Math.ceil(shortShares)}</strong> NO shares @ ${fmt(shortPrice, 4)}/share
+          (cost: ${fmt(noHeadroom * shortPrice)}) and doomsday still leaves you net positive.
+          At ${noBreakeven} total NO shares, Path 1 breaks even at $0.
         </span>
         ${capitalNote}
       `;
-      // "After hedging" = full headroom used (Path 1 at breakeven)
       postShort = noBreakeven;
 
     } else if (pnlYes < -0.0001) {
       // ── Path 1 is currently negative — need more YES ──────────────────
-      const yesNeeded    = shortShares * shortPrice / (1 - longPrice);
+      const yesNeeded    = shortShares * shortPrice / (effectiveYesValue - longPrice);
       const yesAdditional = yesNeeded - longShares;
       const cost = yesAdditional * longPrice;
       const capitalNote = capital > 0 && cost > capital
-        ? `<div class="capital-warning">⚠ Cost to reach Path 1 breakeven (${fmt(cost)}) exceeds available capital (${fmt(capital)}). With your capital you can buy ${fmtShares(capital / longPrice)} more YES — Path 1 would then be ${fmt((longShares + capital / longPrice) * (1 - longPrice) - shortShares * shortPrice)}.</div>`
+        ? `<div class="capital-warning">⚠ Cost to reach Path 1 breakeven (${fmt(cost)}) exceeds available capital (${fmt(capital)}). With your capital you can buy ${fmtShares(capital / longPrice)} more YES — Path 1 would then be ${fmt((longShares + capital / longPrice) * (effectiveYesValue - longPrice) - shortShares * shortPrice)}.</div>`
         : '';
 
       recBody.innerHTML = `
@@ -218,7 +230,6 @@ function showResults({ capital, longPrice, longShares, longTheta, longDte, short
         </span>
         ${capitalNote}
       `;
-      // "After hedging" = Path 1 breakeven YES count
       postLong = yesNeeded;
 
     } else {
@@ -233,8 +244,8 @@ function showResults({ capital, longPrice, longShares, longTheta, longDte, short
   // ── Post-hedge metrics ────────────────────────────────────────────────────
   const totalInvested = postLong * longPrice + postShort * shortPrice;
 
-  // Path 1 (YES/Doomsday): YES → $1, NO → $0
-  const path1Pnl = postLong * (1 - longPrice) - postShort * shortPrice;
+  // Path 1 (YES/Doomsday): YES → effectiveYesValue, NO → $0
+  const path1Pnl = postLong * (effectiveYesValue - longPrice) - postShort * shortPrice;
   const path1Roi = totalInvested > 0 ? path1Pnl / totalInvested : 0;
 
   // Path 2 (NO): NO → $1, YES decays by theta × shortDte (default 0 → flat)
@@ -278,7 +289,8 @@ function showResults({ capital, longPrice, longShares, longTheta, longDte, short
 
   // ── Math breakdown ────────────────────────────────────────────────────────
   renderMath({
-    longPrice, longShares, longTheta, thetaDecay, yesPriceAtNoRes,
+    longPrice, longShares, longTheta, longDte, thetaDecay, yesPriceAtNoRes,
+    effectiveYesValue,
     shortPrice, shortShares, shortDte,
     postLong, postShort,
     pnlYes, pnlNo,
@@ -345,23 +357,27 @@ function renderSentimentSection({ longShares, shortShares, longPrice, shortPrice
 }
 
 function renderMath({
-  longPrice, longShares, longTheta, thetaDecay, yesPriceAtNoRes,
+  longPrice, longShares, longTheta, longDte, thetaDecay, yesPriceAtNoRes,
+  effectiveYesValue,
   shortPrice, shortShares, shortDte,
   postLong, postShort,
   pnlYes, pnlNo,
   totalInvested, path1Pnl, path1Roi, path2Pnl, path2Roi,
 }) {
   const spread = longPrice + shortPrice;
+  const yesPayoutLabel = effectiveYesValue < 1.0
+    ? `$${effectiveYesValue.toFixed(4)} (=$1 discounted 4%APR × ${longDte}d)`
+    : '$1.00';
   const mathBody = document.getElementById('mathBody');
   mathBody.innerHTML = `
 
     <div class="math-block">
-      <div class="math-block-title">Current Position — Path 1: YES wins (Doomsday) · YES → $1, NO → $0</div>
+      <div class="math-block-title">Current Position — Path 1: YES wins (Doomsday) · YES → ${yesPayoutLabel}, NO → $0</div>
       <div class="math-lines">
         <div class="math-line">
-          <span>YES payout: ${fmtShares(longShares)} shares × ($1.00 − $${longPrice.toFixed(4)} entry)</span>
-          <span class="expr">= ${fmtShares(longShares)} × ${(1 - longPrice).toFixed(4)}</span>
-          <span class="result">${fmt(longShares * (1 - longPrice))}</span>
+          <span>YES payout: ${fmtShares(longShares)} shares × (${yesPayoutLabel} − $${longPrice.toFixed(4)} entry)</span>
+          <span class="expr">= ${fmtShares(longShares)} × ${(effectiveYesValue - longPrice).toFixed(4)}</span>
+          <span class="result">${fmt(longShares * (effectiveYesValue - longPrice))}</span>
         </div>
         <div class="math-line">
           <span>NO loss: ${fmtShares(shortShares)} shares × $${shortPrice.toFixed(4)} paid, pays $0</span>
@@ -377,16 +393,16 @@ function renderMath({
     </div>
 
     <div class="math-block">
-      <div class="math-block-title">Current Position — Path 2: NO wins · NO → $1, YES ${thetaDecay > 0 ? `decays by $${thetaDecay.toFixed(4)}` : 'stays flat'}</div>
+      <div class="math-block-title">Current Position — Path 2: NO wins · NO → $1, YES ${thetaDecay > 0.0001 ? `×${decayMultiplier.toFixed(4)} → $${yesPriceAtNoRes.toFixed(4)}` : 'stays flat'}</div>
       <div class="math-lines">
         <div class="math-line">
           <span>NO payout: ${fmtShares(shortShares)} shares × ($1.00 − $${shortPrice.toFixed(4)} entry)</span>
           <span class="expr">= ${fmtShares(shortShares)} × ${(1 - shortPrice).toFixed(4)}</span>
           <span class="result">${fmt(shortShares * (1 - shortPrice))}</span>
         </div>
-        ${thetaDecay > 0 ? `
+        ${thetaDecay > 0.0001 ? `
         <div class="math-line">
-          <span>YES decay: theta $${longTheta.toFixed(4)} × ${shortDte} DTE = $${thetaDecay.toFixed(4)}/share · ${fmtShares(longShares)} shares × ($${yesPriceAtNoRes.toFixed(4)} − $${longPrice.toFixed(4)})</span>
+          <span>YES decay: ×${decayMultiplier.toFixed(6)} over ${shortDte}d · ${fmtShares(longShares)} shares × ($${yesPriceAtNoRes.toFixed(4)} − $${longPrice.toFixed(4)})</span>
           <span class="expr">= ${fmt(longShares * (yesPriceAtNoRes - longPrice))}</span>
           <span class="result negative">${fmt(longShares * (yesPriceAtNoRes - longPrice))}</span>
         </div>` : `
@@ -404,12 +420,12 @@ function renderMath({
     </div>
 
     <div class="math-block">
-      <div class="math-block-title">After Hedge — Path 1: YES wins (Doomsday)</div>
+      <div class="math-block-title">After Hedge — Path 1: YES wins (Doomsday) · YES → ${yesPayoutLabel}</div>
       <div class="math-lines">
         <div class="math-line">
-          <span>YES payout: ${fmtShares(postLong)} shares × ($1.00 − $${longPrice.toFixed(4)})</span>
-          <span class="expr">= ${fmtShares(postLong)} × ${(1 - longPrice).toFixed(4)}</span>
-          <span class="result">${fmt(postLong * (1 - longPrice))}</span>
+          <span>YES payout: ${fmtShares(postLong)} shares × (${yesPayoutLabel} − $${longPrice.toFixed(4)})</span>
+          <span class="expr">= ${fmtShares(postLong)} × ${(effectiveYesValue - longPrice).toFixed(4)}</span>
+          <span class="result">${fmt(postLong * (effectiveYesValue - longPrice))}</span>
         </div>
         <div class="math-line">
           <span>NO loss: ${fmtShares(postShort)} shares × $${shortPrice.toFixed(4)} paid, pays $0</span>
@@ -430,14 +446,14 @@ function renderMath({
     </div>
 
     <div class="math-block">
-      <div class="math-block-title">After Hedge — Path 2: NO wins (YES ${thetaDecay > 0 ? `decays −$${thetaDecay.toFixed(4)}/share` : 'holds flat'})</div>
+      <div class="math-block-title">After Hedge — Path 2: NO wins (YES ${thetaDecay > 0.0001 ? `×${decayMultiplier.toFixed(4)} → $${yesPriceAtNoRes.toFixed(4)}` : 'holds flat'})</div>
       <div class="math-lines">
         <div class="math-line">
           <span>NO payout: ${fmtShares(postShort)} shares × ($1.00 − $${shortPrice.toFixed(4)})</span>
           <span class="expr">= ${fmtShares(postShort)} × ${(1 - shortPrice).toFixed(4)}</span>
           <span class="result">${fmt(postShort * (1 - shortPrice))}</span>
         </div>
-        ${thetaDecay > 0 ? `
+        ${thetaDecay > 0.0001 ? `
         <div class="math-line">
           <span>YES decay: ${fmtShares(postLong)} shares × ($${yesPriceAtNoRes.toFixed(4)} − $${longPrice.toFixed(4)})</span>
           <span class="expr">= ${fmt(postLong * (yesPriceAtNoRes - longPrice))}</span>
@@ -522,12 +538,18 @@ function renderP1Hedge() {
 
   const pLong  = longPrice;
   const pShort = shortPrice;
-  const payoff = 1 - pLong; // YES payout per share net of cost
+
+  const longExpDate = document.getElementById('longExpDate').value;
+  const longDte     = computeDte(longExpDate);
+  const effectiveYesValue = longDte && longDte > 0 ? 1 - 0.04 * longDte / 365 : 1.0;
+  const payoff = effectiveYesValue - pLong; // YES net payout per share (discounted)
 
   // ── Case A: capital is given ───────────────────────────────────────────────
   if (capital > 0) {
-    const x = capital - longShares * payoff + shortShares * pShort;
-    const y = (capital - x * pLong) / pShort;
+    // Solve: (longShares+x)·payoff = (shortShares+y)·pShort  AND  x·pLong + y·pShort = capital
+    // → x = (capital − longShares·payoff + shortShares·pShort) / effectiveYesValue
+    const x = (capital - longShares * payoff + shortShares * pShort) / effectiveYesValue;
+    const y = Math.floor((capital - x * pLong) / pShort);
 
     const totalLong  = longShares + x;
     const totalShort = shortShares + y;
@@ -580,9 +602,12 @@ function renderP1Hedge() {
 
   // ── Case B: no capital, longShares known ──────────────────────────────────
   if (longShares > 0) {
-    const noNeeded    = longShares * payoff / pShort;
+    const noNeeded    = Math.floor(longShares * payoff / pShort);
     const noAdditional= noNeeded - shortShares;
     const checkPnl    = longShares * payoff - noNeeded * pShort;
+    const yesLabel    = effectiveYesValue < 1.0
+      ? `$${effectiveYesValue.toFixed(4)} (discounted)`
+      : '$1.00';
 
     out.innerHTML = `
       <div class="p1hedge-scenario">Scenario: ${fmtShares(longShares)} YES shares held — calculating NO shares needed for Path 1 = $0</div>
@@ -590,27 +615,27 @@ function renderP1Hedge() {
         <div class="p1hedge-row ${noAdditional >= 0 ? 'buy-no' : 'info'}">
           <span class="p1hedge-row-label">
             ${noAdditional >= 0
-              ? `Buy <strong>${fmtShares(noAdditional)}</strong> more NO shares @ ${fmt(pShort, 4)}/share`
-              : `You already hold <strong>${fmtShares(Math.abs(noAdditional))}</strong> more NO shares than needed — consider trimming`
+              ? `Buy <strong>${noAdditional}</strong> more NO shares @ ${fmt(pShort, 4)}/share`
+              : `You already hold <strong>${Math.abs(noAdditional)}</strong> more NO shares than needed — consider trimming`
             }<br>
-            <small>Target total NO position: ${fmtShares(noNeeded)} shares
+            <small>Target total NO position: ${noNeeded} shares
             ${noAdditional >= 0 ? ` · cost: ${fmt(noAdditional * pShort)}` : ''}</small>
           </span>
           <span class="p1hedge-row-value ${colorClass(noAdditional >= 0 ? 1 : -1)}">
-            ${noAdditional >= 0 ? '+' : '−'}${fmtShares(Math.abs(noAdditional))} NO
+            ${noAdditional >= 0 ? '+' : '−'}${Math.abs(noAdditional)} NO
           </span>
         </div>
         <div class="p1hedge-row info">
-          <span class="p1hedge-row-label">Path 1 P&L after adjustment (should be $0.00)</span>
+          <span class="p1hedge-row-label">Path 1 P&L after adjustment (slight positive from floor)</span>
           <span class="p1hedge-row-value ${colorClass(checkPnl)}">${fmt(checkPnl)}</span>
         </div>
       </div>
       <div class="p1hedge-formula">
-        <span class="hl">Breakeven condition:</span> n_yes × (1 − p_yes) = n_no × p_no<br>
-        n_no = n_yes × (1 − p_yes) / p_no<br>
+        <span class="hl">Breakeven condition:</span> n_yes × (yes_eff − p_yes) = n_no × p_no<br>
+        n_no = n_yes × (${yesLabel} − ${fmt(pLong, 4)}) / p_no<br>
         n_no = <span class="hlg">${fmtShares(longShares)}</span> × ${payoff.toFixed(4)} / ${pShort.toFixed(4)}<br>
-        n_no = <span class="hlr">${fmtShares(noNeeded)}</span><br>
-        Additional NO needed = ${fmtShares(noNeeded)} − ${fmtShares(shortShares)} (held) = <span class="hlr">${fmtShares(noAdditional)}</span>
+        n_no = <span class="hlr">${noNeeded}</span> (floored — whole shares only)<br>
+        Additional NO needed = ${noNeeded} − ${fmtShares(shortShares)} (held) = <span class="hlr">${noAdditional}</span>
       </div>
     `;
     return;
@@ -673,6 +698,7 @@ function switchMode(mode) {
   document.getElementById('modeCompare').classList.toggle('hidden', mode !== 'compare');
   document.getElementById('btnModeCalc').classList.toggle('active',  mode === 'calc');
   document.getElementById('btnModeComp').classList.toggle('active',  mode === 'compare');
+  document.querySelector('.app').classList.toggle('compare-mode', mode === 'compare');
   if (mode === 'compare') renderTrackedPanel();
 }
 
@@ -698,6 +724,72 @@ const MARKET_VOLUMES = (() => {
   return typeof raw === 'string' ? JSON.parse(raw) : raw;
 })();
 
+// Build-time price data: slug → [{title, yesPrice, noPrice}]
+const MARKET_PRICES_RAW = (() => {
+  const raw = window.MARKET_PRICES;
+  if (!raw) return {};
+  return typeof raw === 'string' ? JSON.parse(raw) : raw;
+})();
+
+// Process raw price list into { yesPrice, noLegs } using the same date-sort logic.
+// mktList items: { title, outcomePrices } (raw JSON string from build-time)
+//             or { title, yesPrice, noPrice }  (already parsed, from live API path)
+function processMarketPriceData(mktList) {
+  if (!mktList || mktList.length === 0) return null;
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+
+  // Parse and filter
+  const parsed = mktList.flatMap(m => {
+    try {
+      let yp, np;
+      if (m.outcomePrices != null) {
+        const pp = JSON.parse(m.outcomePrices);
+        yp = parseFloat(pp[0]);
+        np = parseFloat(pp[1]);
+      } else {
+        yp = m.yesPrice;
+        np = m.noPrice;
+      }
+      if (!isFinite(yp) || yp < 0.005 || yp > 0.995) return [];
+
+      // Date: prefer title (groupItemTitle, reliable) over endDateIso (often wrong in Gamma API)
+      let date = null;
+      if (m.title) {
+        date = parseTitleDate(m.title);
+      }
+      if (!date && m.endDateIso) {
+        date = new Date(m.endDateIso + 'T00:00:00');
+      }
+
+      // Display title: groupItemTitle if present, else format endDateIso
+      let title = m.title || '';
+      if (!title && m.endDateIso) {
+        const d = new Date(m.endDateIso + 'T00:00:00');
+        title = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      }
+
+      return [{ title, yesPrice: yp, noPrice: np, date }];
+    } catch { return []; }
+  });
+
+  if (parsed.length === 0) return null;
+  if (parsed.length === 1) return { yesPrice: parsed[0].yesPrice, noLegs: [] };
+
+  const dated   = parsed.filter(m => m.date).sort((a, b) => a.date - b.date);
+  const undated = parsed.filter(m => !m.date);
+  const sorted  = [...dated, ...undated];
+
+  const yesMkt = sorted[sorted.length - 1];
+  const yesDte = yesMkt.date ? Math.round((yesMkt.date - today) / 86400000) : null;
+  const noLegs = sorted.slice(0, sorted.length - 1).map((m, idx) => {
+    const expDate = m.date ? m.date.toISOString().slice(0, 10) : '';
+    const dte     = m.date ? Math.round((m.date - today) / 86400000) : null;
+    return { id: idx + 1, noPrice: m.noPrice, expDate, dte: dte > 0 ? dte : null, minNo: null };
+  });
+  return { yesPrice: yesMkt.yesPrice, yesDte: yesDte > 0 ? yesDte : null, noLegs };
+}
+
 // Pre-populate volume cache from build-time data so existing code paths work unchanged.
 const volumeCache = {};
 Object.entries(MARKET_VOLUMES).forEach(([slug, data]) => {
@@ -719,6 +811,166 @@ async function fetchVolume(slug) {
     volumeCache[slug] = null;
     return null;
   }
+}
+
+// Parse "March 31", "December 31", etc. → Date object
+function parseTitleDate(title) {
+  if (!title) return null;
+  const MONTHS = { january:1,february:2,march:3,april:4,may:5,june:6,
+                   july:7,august:8,september:9,october:10,november:11,december:12 };
+  const m = title.trim().match(/^(\w+)\s+(\d+)$/);
+  if (!m) return null;
+  const month = MONTHS[m[1].toLowerCase()];
+  if (!month) return null;
+  const day  = parseInt(m[2]);
+  const now  = new Date(); now.setHours(0,0,0,0);
+  let year = now.getFullYear();
+  let d = new Date(year, month - 1, day);
+  if (d < now) d = new Date(++year, month - 1, day);
+  return d;
+}
+
+// Returns { yesPrice, noLegs: [{noPrice, title, expDate, dte}] }
+// slugOrSlugs can be a single slug string or array of slugs (for multi-event series).
+// Furthest-out dated market = YES, all others = NO legs sorted asc.
+async function fetchMarketPrices(slugOrSlugs) {
+  const slugs = Array.isArray(slugOrSlugs) ? slugOrSlugs : [slugOrSlugs];
+  try {
+    const allMarkets = [];
+
+    for (const slug of slugs) {
+      const res = await fetch(GAMMA_API + encodeURIComponent(slug));
+      if (!res.ok) continue;
+      const events = await res.json();
+      if (!events || events.length === 0) continue;
+      const markets = events[0].markets;
+      if (!markets) continue;
+
+      for (const m of markets) {
+        if (!m.outcomePrices) continue;
+        try {
+          const prices   = JSON.parse(m.outcomePrices);
+          const outcomes = JSON.parse(m.outcomes || '["Yes","No"]');
+          const yesIdx   = outcomes.findIndex(o => /yes/i.test(o));
+          const noIdx    = outcomes.findIndex(o => /no/i.test(o));
+          const yesPrice = parseFloat(prices[yesIdx >= 0 ? yesIdx : 0]);
+          const noPrice  = parseFloat(prices[noIdx  >= 0 ? noIdx  : 1]);
+          if (yesPrice < 0.005 || yesPrice > 0.995) continue;
+
+          // Date: prefer groupItemTitle (reliable) over endDateIso (often wrong in Gamma API)
+          let date = null;
+          const endDateIso   = m.endDateIso    || '';
+          const groupTitle   = m.groupItemTitle || '';
+          if (groupTitle) {
+            date = parseTitleDate(groupTitle);
+          }
+          if (!date && endDateIso) {
+            date = new Date(endDateIso + 'T00:00:00');
+          }
+
+          // Display title
+          let title = groupTitle;
+          if (!title && endDateIso) {
+            const d = new Date(endDateIso + 'T00:00:00');
+            title = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+          }
+
+          allMarkets.push({ yesPrice, noPrice, title, date });
+        } catch {}
+      }
+    }
+
+    if (allMarkets.length === 0) return null;
+    if (allMarkets.length === 1) return { yesPrice: allMarkets[0].yesPrice, noLegs: [] };
+
+    const today   = new Date(); today.setHours(0, 0, 0, 0);
+    const dated   = allMarkets.filter(p => p.date).sort((a, b) => a.date - b.date);
+    const undated = allMarkets.filter(p => !p.date);
+    const sorted  = [...dated, ...undated];
+
+    const yesMkt = sorted[sorted.length - 1];
+    const noMkts = sorted.slice(0, sorted.length - 1);
+    const yesDte = yesMkt.date ? Math.round((yesMkt.date - today) / 86400000) : null;
+
+    const noLegs = noMkts.map((m, idx) => {
+      const expDate = m.date ? m.date.toISOString().slice(0, 10) : '';
+      const dte     = m.date ? Math.round((m.date - today) / 86400000) : null;
+      return { id: idx + 1, noPrice: m.noPrice, title: m.title, expDate, dte: dte > 0 ? dte : null };
+    });
+
+    return { yesPrice: yesMkt.yesPrice, yesDte: yesDte > 0 ? yesDte : null, noLegs };
+  } catch {
+    return null;
+  }
+}
+
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+const debouncedFetchPrices = debounce(autoFetchPrices, 800);
+
+async function autoFetchPrices(entryId) {
+  const entry = compEntries.find(e => e.id === entryId);
+  if (!entry || !entry.slug) return;
+
+  const btn      = document.getElementById(`comp-refresh-${entryId}`);
+  const statusEl = document.getElementById(`comp-fetch-status-${entryId}`);
+
+  if (btn)      { btn.disabled = true; btn.classList.add('spinning'); }
+  if (statusEl) statusEl.textContent = 'Fetching…';
+
+  // Try live API first (use all slugs for multi-event series); fall back to build-time data
+  const slugs = [entry.slug, ...(entry.relatedSlugs || [])];
+  let result = await fetchMarketPrices(slugs);
+  let source  = 'live';
+
+  if (!result && MARKET_PRICES_RAW[entry.slug]) {
+    result = processMarketPriceData(MARKET_PRICES_RAW[entry.slug]);
+    source  = 'build';
+  }
+
+  if (btn)      { btn.disabled = false; btn.classList.remove('spinning'); }
+
+  if (!result) {
+    if (statusEl) statusEl.textContent = 'Could not fetch prices';
+    return;
+  }
+
+  // Update YES price and DTE
+  entry.yesPrice = result.yesPrice;
+  entry.yesDte   = result.yesDte ?? null;
+  const yesInput = document.getElementById(`comp-yesprice-${entryId}`);
+  if (yesInput) yesInput.value = result.yesPrice;
+
+  // Replace NO legs if multi-market (keep existing legs if single-market)
+  if (result.noLegs.length > 0) {
+    entry.noLegs = result.noLegs.map((leg, idx) => ({
+      id:      idx + 1,
+      noPrice: leg.noPrice,
+      expDate: leg.expDate,
+      dte:     leg.dte,
+      minNo:   null,
+    }));
+    entry.nextLegId = entry.noLegs.length + 1;
+
+    const legList = document.getElementById(`comp-leg-list-${entryId}`);
+    if (legList) {
+      legList.innerHTML = entry.noLegs
+        .map(leg => buildLegRowHTML(entryId, leg, entry.inputMode))
+        .join('');
+    }
+  }
+
+  if (statusEl) {
+    const t        = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const legCount = result.noLegs.length;
+    const legs     = legCount > 0 ? ` · ${legCount} NO leg${legCount > 1 ? 's' : ''}` : '';
+    const src      = source === 'build' ? ' (build-time)' : '';
+    statusEl.textContent = `${t}${legs}${src}`;
+  }
+
+  renderCompResults();
 }
 
 function fmtVolume(v) {
@@ -756,44 +1008,67 @@ function renderTrackedPanel() {
   if (!list) return;
   list.innerHTML = '';
 
-  // Sort by volume descending (nulls last)
-  const sorted = [...PRESET_MARKETS].sort((a, b) => {
-    const va = volumeCache[a.slug] ?? -1;
-    const vb = volumeCache[b.slug] ?? -1;
-    return vb - va;
+  const CATEGORY_ORDER = ['Geopolitics', 'Politics', 'AI & Tech', 'Finance & Crypto', 'Entertainment', 'Other'];
+
+  // Group markets by category
+  const byCategory = {};
+  PRESET_MARKETS.forEach(m => {
+    const cat = m.category || 'Other';
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(m);
   });
 
-  sorted.forEach(m => {
-    const alreadyAdded = compEntries.some(e => e.slug === m.slug);
-    const cached       = volumeCache[m.slug];
-    const volText      = (m.slug in volumeCache) ? fmtVolume(cached) : '…';
+  // Sort within each category by volume descending (nulls last)
+  Object.values(byCategory).forEach(arr => {
+    arr.sort((a, b) => (volumeCache[b.slug] ?? -1) - (volumeCache[a.slug] ?? -1));
+  });
 
-    const row = document.createElement('div');
-    row.className = 'tracked-row';
-    row.id = `tracked-row-${m.slug}`;
-    row.innerHTML = `
-      <a class="tracked-name" href="${POLYMARKET_BASE}${m.slug}" target="_blank" rel="noopener">${m.name}</a>
-      <span class="tracked-vol vol-${m.slug} ${(m.slug in volumeCache) ? 'vol-loaded' : ''}"
-            title="Total market volume">${volText}</span>
-      <button class="btn-tracked-add ${alreadyAdded ? 'added' : ''}"
-        onclick="addPresetMarket('${m.slug}')"
-        ${alreadyAdded ? 'disabled' : ''}>
-        ${alreadyAdded ? 'Added' : '+ Compare'}
-      </button>
-    `;
-    list.appendChild(row);
+  // Render in category order
+  const categories = CATEGORY_ORDER.filter(c => byCategory[c]).concat(
+    Object.keys(byCategory).filter(c => !CATEGORY_ORDER.includes(c))
+  );
 
-    // Build-time volumes are already in volumeCache; only fetch at runtime for custom slugs.
-    if (!(m.slug in volumeCache)) {
-      fetchVolume(m.slug).then(vol => updateVolumeEl(m.slug, vol));
-    }
+  categories.forEach(cat => {
+    const header = document.createElement('div');
+    header.className = 'tracked-category-header';
+    header.textContent = cat;
+    list.appendChild(header);
+
+    byCategory[cat].forEach(m => {
+      const alreadyAdded = compEntries.some(e => e.slug === m.slug);
+      const volText      = (m.slug in volumeCache) ? fmtVolume(volumeCache[m.slug]) : '…';
+
+      const row = document.createElement('div');
+      row.className = 'tracked-row';
+      row.id = `tracked-row-${m.slug}`;
+      row.innerHTML = `
+        <a class="tracked-name" href="${POLYMARKET_BASE}${m.slug}" target="_blank" rel="noopener">${m.name}</a>
+        <span class="tracked-vol vol-${m.slug} ${(m.slug in volumeCache) ? 'vol-loaded' : ''}"
+              title="Total market volume">${volText}</span>
+        <button class="btn-tracked-add ${alreadyAdded ? 'added' : ''}"
+          onclick="addPresetMarket('${m.slug}')"
+          ${alreadyAdded ? 'disabled' : ''}>
+          ${alreadyAdded ? 'Added' : '+ Compare'}
+        </button>
+      `;
+      list.appendChild(row);
+
+      // Build-time volumes are already in volumeCache; only fetch at runtime for custom slugs.
+      if (!(m.slug in volumeCache)) {
+        fetchVolume(m.slug).then(vol => updateVolumeEl(m.slug, vol));
+      }
+    });
   });
 }
 
 function addPresetMarket(slug) {
   const preset = PRESET_MARKETS.find(m => m.slug === slug);
   if (!preset) return;
-  addMarketEntry(preset);
+
+  // Pre-populate prices from build-time data before the entry is rendered
+  const buildPrices = MARKET_PRICES_RAW[slug] ? processMarketPriceData(MARKET_PRICES_RAW[slug]) : null;
+
+  addMarketEntry(preset, buildPrices);
 }
 
 function refreshTrackedButtons() {
@@ -809,24 +1084,34 @@ function refreshTrackedButtons() {
 
 // ── Add / Remove (no full re-render — just append / remove the one element) ──
 
-function addMarketEntry(preset = null) {
+function addMarketEntry(preset = null, buildPrices = null) {
   const id    = compNextId++;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const defaultDate = `${today.getFullYear()}-12-31`;
   const defaultDte  = Math.round((new Date(defaultDate + 'T00:00:00') - today) / 86400000);
+
+  // Start with build-time prices if available, else blank defaults
+  const yesPrice = buildPrices ? buildPrices.yesPrice : null;
+  const noLegs   = buildPrices && buildPrices.noLegs.length > 0
+    ? buildPrices.noLegs.map((l, i) => ({ ...l, id: i + 1, minNo: null }))
+    : [{ id: 1, noPrice: null, expDate: defaultDate, dte: defaultDte > 0 ? defaultDte : null, minNo: null }];
+
   const entry = {
     id,
-    name:      preset ? preset.name : '',
-    slug:      preset ? preset.slug : '',
-    yesPrice:  null,
-    thetaDrop: 0.09,
+    name:         preset ? preset.name : '',
+    slug:         preset ? preset.slug : '',
+    relatedSlugs: preset ? (preset.relatedSlugs || []) : [],
+    yesPrice,
+    yesDte:    buildPrices ? buildPrices.yesDte : null,
+    thetaDrop: 10,
     thetaDays: 180,
     inputMode: 'capital', capital: 100, minYes: null,
-    noLegs:    [{ id: 1, noPrice: null, expDate: defaultDate, dte: defaultDte > 0 ? defaultDte : null, minNo: null }],
-    nextLegId: 2,
+    noLegs,
+    nextLegId: noLegs.length + 1,
   };
   compEntries.push(entry);
-  document.getElementById('compEntries').appendChild(buildEntryEl(entry, compEntries.length));
+  const statusNote = buildPrices ? '(build-time)' : '';
+  document.getElementById('compEntries').appendChild(buildEntryEl(entry, compEntries.length, statusNote));
   refreshTrackedButtons();
   renderCompResults();
 }
@@ -870,6 +1155,8 @@ function updateEntrySlug(id, slug) {
   }
   refreshTrackedButtons();
   renderCompResults();
+  // Auto-fetch prices whenever a valid slug is entered
+  if (entry.slug) debouncedFetchPrices(entry.id);
 }
 
 function updateEntry(id, field, rawValue) {
@@ -885,11 +1172,11 @@ function updateEntry(id, field, rawValue) {
   }
   // Refresh computed theta display when either theta field changes
   if (field === 'thetaDrop' || field === 'thetaDays') {
-    const drop = entry.thetaDrop ?? 0.09;
+    const drop = entry.thetaDrop ?? 10;
     const days = entry.thetaDays ?? 180;
     const el = document.getElementById(`comp-theta-${id}`);
     if (el) el.textContent = days > 0
-      ? `= $${(drop / days).toFixed(6).replace(/\.?0+$/, '')}/day`
+      ? `= ×${Math.pow(1 - drop/100, 1/days).toFixed(6)}/day`
       : '= —';
   }
   renderCompResults();
@@ -1011,6 +1298,7 @@ function buildLegRowHTML(entryId, leg, inputMode) {
           <label>NO Price</label>
           <div class="input-wrap"><span class="prefix">$</span>
             <input type="number" placeholder="0.55" min="0.001" max="0.999" step="0.001"
+              id="comp-noprice-${entryId}-${leg.id}"
               value="${leg.noPrice ?? ''}"
               oninput="updateLeg(${entryId},${leg.id},'noPrice',this.value)" />
           </div>
@@ -1030,7 +1318,7 @@ function buildLegRowHTML(entryId, leg, inputMode) {
     </div>`;
 }
 
-function buildEntryEl(e, num) {
+function buildEntryEl(e, num, initialStatus = '') {
   const wrap = document.createElement('div');
   wrap.className = 'comp-entry';
   wrap.id = `comp-entry-${e.id}`;
@@ -1044,6 +1332,8 @@ function buildEntryEl(e, num) {
       <span class="comp-entry-num">#${num}</span>
       <span class="comp-entry-name-preview" id="comp-name-preview-${e.id}">${e.name || `Market ${e.id}`}</span>
       ${polyLink}
+      <span class="comp-fetch-status" id="comp-fetch-status-${e.id}">${initialStatus}</span>
+      <button class="btn-fetch-prices" id="comp-refresh-${e.id}" onclick="autoFetchPrices(${e.id})" title="Fetch live prices from Polymarket">↻ Prices</button>
       <button class="btn-remove-entry" onclick="removeMarketEntry(${e.id})" title="Remove">✕</button>
     </div>
     <div class="comp-entry-body">
@@ -1071,6 +1361,7 @@ function buildEntryEl(e, num) {
           <label>YES Price</label>
           <div class="input-wrap"><span class="prefix">$</span>
             <input type="number" placeholder="0.45" min="0.001" max="0.999" step="0.001"
+              id="comp-yesprice-${e.id}"
               value="${e.yesPrice ?? ''}"
               oninput="updateEntry(${e.id},'yesPrice',this.value)" />
           </div>
@@ -1079,19 +1370,20 @@ function buildEntryEl(e, num) {
         <div class="comp-field" style="grid-column:1/-1">
           <label>Long Side Theta <small style="font-weight:400;text-transform:none">(YES price decay)</small></label>
           <div class="theta-row">
-            <div class="input-wrap"><span class="prefix">$</span>
-              <input type="number" placeholder="0.09" min="0" max="1" step="0.01"
-                value="${e.thetaDrop ?? 0.09}"
+            <div class="input-wrap">
+              <input type="number" placeholder="10" min="0" max="100" step="1"
+                value="${e.thetaDrop ?? 10}"
                 oninput="updateEntry(${e.id},'thetaDrop',this.value)" />
+              <span class="suffix">%</span>
             </div>
-            <span class="theta-over">over</span>
+            <span class="theta-over">decay over</span>
             <div class="input-wrap">
               <input type="number" placeholder="180" min="1" step="1"
                 value="${e.thetaDays ?? 180}"
                 oninput="updateEntry(${e.id},'thetaDays',this.value)" />
             </div>
             <span class="theta-over">days</span>
-            <span class="theta-computed" id="comp-theta-${e.id}">= $${(e.thetaDrop / e.thetaDays).toFixed(6).replace(/\.?0+$/, '')}/day</span>
+            <span class="theta-computed" id="comp-theta-${e.id}">= ×${Math.pow(1 - (e.thetaDrop ?? 10)/100, 1/(e.thetaDays ?? 180)).toFixed(6)}/day</span>
           </div>
         </div>
 
@@ -1138,31 +1430,36 @@ function buildEntryEl(e, num) {
 // Ann. ROI     = path2Roi × 365 / dte
 
 function calcEntry(entry, leg) {
-  const { yesPrice: pY, thetaDrop = 0.09, thetaDays = 180, inputMode, capital, minYes } = entry;
-  const longTheta = thetaDays > 0 ? thetaDrop / thetaDays : 0;
+  const { yesPrice: pY, yesDte, thetaDrop = 10, thetaDays = 180, inputMode, capital, minYes } = entry;
+  // Per-day multiplicative decay factor
+  const longTheta = thetaDays > 0 ? Math.pow(1 - thetaDrop / 100, 1 / thetaDays) : 1;
   const { noPrice: pN, dte, minNo } = leg;
   if (!pY || !pN || pY <= 0 || pY >= 1 || pN <= 0 || pN >= 1) return null;
 
-  const payoff = 1 - pY; // net YES payout per share
+  // Time-value discount: YES pays ~$1 at expiry but less if sold early (4% APR)
+  const effectiveYesValue = yesDte && yesDte > 0 ? 1 - 0.04 * yesDte / 365 : 1.0;
+  const payoff = effectiveYesValue - pY; // net YES payout per share
+  if (payoff <= 0) return null; // degenerate: discount exceeds price gap
+
   let nYes, nNo;
 
   if (inputMode === 'capital') {
     if (!capital || capital <= 0) return null;
     nYes = capital;
-    nNo  = capital * payoff / pN;
+    nNo  = Math.floor(capital * payoff / pN);
   } else {
     const hasYes = minYes != null && minYes > 0;
     const hasNo  = minNo  != null && minNo  > 0;
     if (!hasYes && !hasNo) return null;
 
     if (hasYes && hasNo) {
-      const nNoFromYes = minYes * payoff / pN;
+      const nNoFromYes = Math.floor(minYes * payoff / pN);
       const nYesFromNo = minNo  * pN    / payoff;
       if (nNoFromYes >= minNo) { nYes = minYes; nNo = nNoFromYes; }
       else                     { nYes = nYesFromNo; nNo = minNo; }
     } else if (hasYes) {
       nYes = minYes;
-      nNo  = minYes * payoff / pN;
+      nNo  = Math.floor(minYes * payoff / pN);
     } else {
       nNo  = minNo;
       nYes = minNo * pN / payoff;
@@ -1171,15 +1468,16 @@ function calcEntry(entry, leg) {
 
   const totalCost = nYes * pY + nNo * pN;
 
-  // Path 2: NO pays $1; YES decays by theta × DTE (default 0 → flat)
-  const thetaDecay      = longTheta > 0 && dte ? longTheta * dte : 0;
-  const yesPriceAtNoRes = Math.max(0, pY - thetaDecay);
+  // Path 2: NO pays $1; YES decays multiplicatively by longTheta^dte
+  const decayMult       = longTheta < 1 && dte ? Math.pow(longTheta, dte) : 1;
+  const yesPriceAtNoRes = pY * decayMult;
   const path2Pnl        = nNo * (1 - pN) + nYes * (yesPriceAtNoRes - pY);
   const path2Roi        = totalCost > 0 ? path2Pnl / totalCost : 0;
   const annRoi          = dte && dte > 0 ? path2Roi * 365 / dte : null;
 
   // Sentiment change breakeven: max YES drop before NO profit no longer covers YES loss
   const sentimentBreakevenDrop = nYes > 0 ? (nNo * (1 - pN)) / nYes : null;
+  const thetaDecay = pY - yesPriceAtNoRes;
 
   return { nYes, nNo, totalCost, path2Pnl, path2Roi, annRoi, thetaDecay, sentimentBreakevenDrop };
 }
@@ -1234,11 +1532,16 @@ function renderCompResults() {
       ? `<span class="${colorClass(sentDrop)}">${fmt(sentDrop, 4)}</span>${c.thetaDecay > 0 ? `<br><small style="color:var(--text-subtle)">θ−${fmt(c.thetaDecay,4)}</small>` : ''}`
       : '—';
 
+    const yesCost = c.nYes * (e.yesPrice ?? 0);
+    const noCost  = c.nNo  * (leg.noPrice ?? 0);
+
     tr.innerHTML = `
       ${nameCell}
       ${volCell}
       <td>${fmtShares(c.nYes)}</td>
+      <td>${fmt(yesCost)}</td>
       <td>${fmtShares(c.nNo)}</td>
+      <td>${fmt(noCost)}</td>
       <td>${fmt(c.totalCost)}</td>
       <td class="${colorClass(c.path2Pnl)}">${fmt(c.path2Pnl)}</td>
       <td class="${colorClass(c.path2Roi)}">${fmtPct(c.path2Roi)}</td>
